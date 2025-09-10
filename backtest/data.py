@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+from backtest.cache import load_cache, save_cache
 
 BASE_URL = "https://api.binance.com"
 FUTURES_BASE = "https://fapi.binance.com"
@@ -21,11 +22,17 @@ KLINE_COLS = [
     "ignore"
 ]
 
-def fetch_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200) -> pd.DataFrame:
+def fetch_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200, use_cache: bool = True) -> pd.DataFrame:
     """
     Binance 공개 API에서 OHLCV 캔들 수집.
     반환 컬럼: time(KST), open, high, low, close, volume
     """
+    cache_key = f"klines_{symbol}_{interval}_{limit}"
+    if use_cache:
+        df = load_cache(cache_key, max_age_sec=600)  # 10분 TTL
+        if df is not None:
+            return df
+
     url = f"{BASE_URL}/api/v3/klines"
     params = {"symbol": symbol.upper(), "interval": interval, "limit": int(limit)}
     r = requests.get(url, params=params, timeout=15)
@@ -42,8 +49,12 @@ def fetch_klines(symbol: str = "BTCUSDT", interval: str = "1h", limit: int = 200
     # open_time(ms) -> tz-aware KST
     df["time"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.tz_convert("Asia/Seoul")
 
-    out = df[["time", "open", "high", "low", "close", "volume"]].copy()
-    return out.sort_values("time").reset_index(drop=True)
+    out = df[["time", "open", "high", "low", "close", "volume"]].copy().sort_values("time").reset_index(drop=True)
+
+    if use_cache:
+        save_cache(out, cache_key)
+
+    return out
 
 
 def _to_kst(ts_ms: int):
