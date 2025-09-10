@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
 from matplotlib import pyplot as plt
 
@@ -45,220 +46,229 @@ tab_bt, tab_corr = st.tabs(["🧪 백테스트", "🔗 상관분석"])
 # ======================
 # 🧪 백테스트 탭
 # ======================
-# -----------------------------
-# 룰 빌더 GUI (MVP)
-# -----------------------------
-st.markdown("### 🧩 룰 빌더 (MVP)")
-
-# 초기 세션 상태
-if "rule_rows" not in st.session_state:
-    st.session_state.rule_rows = []   # 각 원소는 {"type": "compare"/"cross", ...}
-if "rule_logic" not in st.session_state:
-    st.session_state.rule_logic = "and"  # and / or
-
-# 공통 셀렉터 유틸
-INDICATORS = ["sma", "ema", "rsi", "macd", "bbands"]
-SOURCES = ["open", "high", "low", "close"]
-OPS = [">", "<", ">=", "<=", "==", "!="]
-
-def build_operand(kind, name, params, field, source, const_value):
-    """
-    kind: "indicator" | "source" | "const"
-    """
-    if kind == "const":
-        return {"type": "const", "value": const_value}
-    if kind == "source":
-        # 간단 소스 컬럼 참조 (close 등)
-        return {"type": "indicator", "name": name}
-    # indicator
-    obj = {"type": "indicator", "name": name, "params": params or {}}
-    if source:
-        obj["source"] = source
-    if field:
-        obj["field"] = field
-    return obj
-
-with st.expander("조건 추가하기", expanded=True):
-    cond_type = st.radio("조건 타입", ["비교식", "교차식"], horizontal=True)
-
-    if cond_type == "비교식":
-        colA, colB = st.columns(2)
-        with colA:
-            left_kind = st.selectbox("Left 피연산자", ["indicator", "source"], index=0)
-            left_name = st.selectbox("Left 선택", INDICATORS if left_kind=="indicator" else SOURCES)
-            left_source = None
-            left_params = {}
-            left_field = None
-
-            if left_kind == "indicator":
-                if left_name in ["sma", "bbands"]:
-                    win = st.number_input("window", 5, 200, 20)
-                    left_params["window"] = int(win)
-                if left_name == "ema":
-                    span = st.number_input("span", 2, 200, 12)
-                    left_params["span"] = int(span)
-                if left_name == "rsi":
-                    period = st.number_input("period", 2, 200, 14)
-                    left_params["period"] = int(period)
-                if left_name == "macd":
-                    fast = st.number_input("fast", 2, 200, 12)
-                    slow = st.number_input("slow", 2, 200, 26)
-                    signal = st.number_input("signal", 2, 200, 9)
-                    left_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
-                    left_field = st.selectbox("field", ["macd", "signal", "hist"], index=2)
-                if left_name == "bbands":
-                    k = st.number_input("k", 0.5, 5.0, 2.0, step=0.1)
-                    left_params["k"] = float(k)
-                if left_name in ["sma", "ema", "rsi", "bbands", "macd"]:
-                    left_source = st.selectbox("source", SOURCES, index=3)
-
-        with colB:
-            op = st.selectbox("연산자", OPS, index=1)
-            right_kind = st.selectbox("Right 피연산자", ["indicator", "source", "const"], index=2)
-
-            right_name = None; right_params = {}; right_field=None; right_source=None; const_value=None
-            if right_kind == "const":
-                const_value = st.number_input("상수 값", value=30.0)
-            elif right_kind == "source":
-                right_name = st.selectbox("Right 선택 (소스)", SOURCES)
-            else:
-                right_name = st.selectbox("Right 선택 (지표)", INDICATORS, index=0)
-                if right_name in ["sma", "bbands"]:
-                    win = st.number_input("right.window", 5, 200, 20)
-                    right_params["window"] = int(win)
-                if right_name == "ema":
-                    span = st.number_input("right.span", 2, 200, 26)
-                    right_params["span"] = int(span)
-                if right_name == "rsi":
-                    period = st.number_input("right.period", 2, 200, 14)
-                    right_params["period"] = int(period)
-                if right_name == "macd":
-                    fast = st.number_input("right.fast", 2, 200, 12)
-                    slow = st.number_input("right.slow", 2, 200, 26)
-                    signal = st.number_input("right.signal", 2, 200, 9)
-                    right_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
-                    right_field = st.selectbox("right.field", ["macd", "signal", "hist"], index=2)
-                if right_name in ["sma", "ema", "rsi", "bbands", "macd"]:
-                    right_source = st.selectbox("right.source", SOURCES, index=3)
-
-        if st.button("조건 추가 (비교식)", use_container_width=True):
-            left = build_operand(left_kind, left_name, left_params, left_field, left_source, const_value=None)
-            right = build_operand(right_kind, right_name, right_params, right_field, right_source, const_value)
-            st.session_state.rule_rows.append({"type": "compare", "op": op, "left": left, "right": right})
-            st.success("비교식 조건이 추가되었습니다.")
-
-    else:  # 교차식
-        colC, colD = st.columns(2)
-        with colC:
-            cross_op = st.selectbox("교차 종류", ["crossover", "crossunder"], index=0)
-            l_kind = st.selectbox("Left", ["indicator", "source"], index=0, key="cross_l_kind")
-            l_name = st.selectbox("Left 선택", INDICATORS if l_kind=="indicator" else SOURCES, key="cross_l_name")
-            l_params={}; l_field=None; l_source=None
-            if l_kind == "indicator":
-                if l_name in ["sma", "bbands"]:
-                    win = st.number_input("left.window", 5, 200, 12, key="cross_l_win")
-                    l_params["window"] = int(win)
-                if l_name == "ema":
-                    span = st.number_input("left.span", 2, 200, 12, key="cross_l_span")
-                    l_params["span"] = int(span)
-                if l_name == "rsi":
-                    period = st.number_input("left.period", 2, 200, 14, key="cross_l_period")
-                    l_params["period"] = int(period)
-                if l_name == "macd":
-                    fast = st.number_input("left.fast", 2, 200, 12, key="cross_l_fast")
-                    slow = st.number_input("left.slow", 2, 200, 26, key="cross_l_slow")
-                    signal = st.number_input("left.signal", 2, 200, 9, key="cross_l_signal")
-                    l_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
-                    l_field = st.selectbox("left.field", ["macd", "signal", "hist"], index=2, key="cross_l_field")
-                if l_name in ["sma", "ema", "rsi", "bbands", "macd"]:
-                    l_source = st.selectbox("left.source", SOURCES, index=3, key="cross_l_source")
-
-        with colD:
-            r_kind = st.selectbox("Right", ["indicator", "source"], index=0, key="cross_r_kind")
-            r_name = st.selectbox("Right 선택", INDICATORS if r_kind=="indicator" else SOURCES, key="cross_r_name")
-            r_params={}; r_field=None; r_source=None
-            if r_kind == "indicator":
-                if r_name in ["sma", "bbands"]:
-                    win = st.number_input("right.window", 5, 200, 26, key="cross_r_win")
-                    r_params["window"] = int(win)
-                if r_name == "ema":
-                    span = st.number_input("right.span", 2, 200, 26, key="cross_r_span")
-                    r_params["span"] = int(span)
-                if r_name == "rsi":
-                    period = st.number_input("right.period", 2, 200, 14, key="cross_r_period")
-                    r_params["period"] = int(period)
-                if r_name == "macd":
-                    fast = st.number_input("right.fast", 2, 200, 12, key="cross_r_fast")
-                    slow = st.number_input("right.slow", 2, 200, 26, key="cross_r_slow")
-                    signal = st.number_input("right.signal", 2, 200, 9, key="cross_r_signal")
-                    r_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
-                    r_field = st.selectbox("right.field", ["macd", "signal", "hist"], index=2, key="cross_r_field")
-                if r_name in ["sma", "ema", "rsi", "bbands", "macd"]:
-                    r_source = st.selectbox("right.source", SOURCES, index=3, key="cross_r_source")
-
-        if st.button("조건 추가 (교차식)", use_container_width=True):
-            left = build_operand(l_kind, l_name, l_params, l_field, l_source, const_value=None)
-            right = build_operand(r_kind, r_name, r_params, r_field, r_source, const_value=None)
-            st.session_state.rule_rows.append({"type": "cross", "op": cross_op, "left": left, "right": right})
-            st.success("교차식 조건이 추가되었습니다.")
-
-# 현재 조건 리스트 표시/관리
-st.markdown("#### 현재 조건")
-if not st.session_state.rule_rows:
-    st.info("추가된 조건이 없습니다.")
-else:
-    for i, row in enumerate(st.session_state.rule_rows):
-        st.write(f"{i+1}) {row}")
-
-    colX, colY, colZ = st.columns([1,1,2])
-    with colX:
-        if st.button("마지막 조건 삭제"):
-            st.session_state.rule_rows.pop()
-    with colY:
-        if st.button("모두 삭제"):
-            st.session_state.rule_rows = []
-
-# 결합 방식 (AND/OR)
-st.session_state.rule_logic = st.radio("조건 결합 방식", ["and", "or"], index=0, horizontal=True)
-
-# 룰 JSON 생성 + 미리보기 + entry_sig 개수 표시
-if st.button("룰 JSON 생성/적용", type="secondary"):
-    if not st.session_state.rule_rows:
-        st.warning("조건이 없습니다. 최소 1개 이상 추가하세요.")
-    else:
-        # 내부 표현을 DSL로 컴파일
-        clauses = []
-        for r in st.session_state.rule_rows:
-            if r["type"] == "compare":
-                clauses.append({
-                    "op": r["op"],
-                    "left": r["left"],
-                    "right": r["right"]
-                })
-            else:  # cross
-                clauses.append({
-                    "op": r["op"],
-                    "left": r["left"],
-                    "right": r["right"]
-                })
-        if len(clauses) == 1:
-            compiled = clauses[0]
-        else:
-            compiled = {"op": st.session_state.rule_logic, "args": clauses}
-
-        # 룰 JSON 텍스트에 주입 (기존 Entry textarea 변수명에 맞게)
-        st.session_state["Entry JSON"] = json.dumps(compiled, indent=2)  # 키 이름은 아래 textarea의 label/key에 맞춰주면 자동 반영됨
-
-        # 바로 평가해서 True 개수 피드백
-        try:
-            entry_sig_preview = evaluate_rule(compiled, price_df)
-            st.success(f"룰 적용 완료! True 시그널 개수: {int(entry_sig_preview.sum())}")
-        except Exception as e:
-            st.error(f"룰 평가 에러: {e}")
-
-
 with tab_bt:
     st.subheader("🧪 커스텀 룰 → 백테스트")
+
+    # -----------------------------
+    # 룰 빌더 GUI (MVP)
+    # -----------------------------
+    st.markdown("### 🧩 룰 빌더 (MVP)")
+
+    # 초기 세션 상태
+    if "rule_rows" not in st.session_state:
+        st.session_state.rule_rows = []  # 각 원소는 {"type": "compare"/"cross", ...}
+    if "rule_logic" not in st.session_state:
+        st.session_state.rule_logic = "and"  # and / or
+
+    # 공통 셀렉터 유틸
+    INDICATORS = ["sma", "ema", "rsi", "macd", "bbands"]
+    SOURCES = ["open", "high", "low", "close"]
+    OPS = [">", "<", ">=", "<=", "==", "!="]
+
+
+    def build_operand(kind, name, params, field, source, const_value):
+        """
+        kind: "indicator" | "source" | "const"
+        """
+        if kind == "const":
+            return {"type": "const", "value": const_value}
+        if kind == "source":
+            # 간단 소스 컬럼 참조 (close 등)
+            return {"type": "indicator", "name": name}
+        # indicator
+        obj = {"type": "indicator", "name": name, "params": params or {}}
+        if source:
+            obj["source"] = source
+        if field:
+            obj["field"] = field
+        return obj
+
+
+    with st.expander("조건 추가하기", expanded=True):
+        cond_type = st.radio("조건 타입", ["비교식", "교차식"], horizontal=True)
+
+        if cond_type == "비교식":
+            colA, colB = st.columns(2)
+            with colA:
+                left_kind = st.selectbox("Left 피연산자", ["indicator", "source"], index=0)
+                left_name = st.selectbox("Left 선택", INDICATORS if left_kind == "indicator" else SOURCES)
+                left_source = None
+                left_params = {}
+                left_field = None
+
+                if left_kind == "indicator":
+                    if left_name in ["sma", "bbands"]:
+                        win = st.number_input("window", 5, 200, 20)
+                        left_params["window"] = int(win)
+                    if left_name == "ema":
+                        span = st.number_input("span", 2, 200, 12)
+                        left_params["span"] = int(span)
+                    if left_name == "rsi":
+                        period = st.number_input("period", 2, 200, 14)
+                        left_params["period"] = int(period)
+                    if left_name == "macd":
+                        fast = st.number_input("fast", 2, 200, 12)
+                        slow = st.number_input("slow", 2, 200, 26)
+                        signal = st.number_input("signal", 2, 200, 9)
+                        left_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
+                        left_field = st.selectbox("field", ["macd", "signal", "hist"], index=2)
+                    if left_name == "bbands":
+                        k = st.number_input("k", 0.5, 5.0, 2.0, step=0.1)
+                        left_params["k"] = float(k)
+                    if left_name in ["sma", "ema", "rsi", "bbands", "macd"]:
+                        left_source = st.selectbox("source", SOURCES, index=3)
+
+            with colB:
+                op = st.selectbox("연산자", OPS, index=1)
+                right_kind = st.selectbox("Right 피연산자", ["indicator", "source", "const"], index=2)
+
+                right_name = None;
+                right_params = {};
+                right_field = None;
+                right_source = None;
+                const_value = None
+                if right_kind == "const":
+                    const_value = st.number_input("상수 값", value=30.0)
+                elif right_kind == "source":
+                    right_name = st.selectbox("Right 선택 (소스)", SOURCES)
+                else:
+                    right_name = st.selectbox("Right 선택 (지표)", INDICATORS, index=0)
+                    if right_name in ["sma", "bbands"]:
+                        win = st.number_input("right.window", 5, 200, 20)
+                        right_params["window"] = int(win)
+                    if right_name == "ema":
+                        span = st.number_input("right.span", 2, 200, 26)
+                        right_params["span"] = int(span)
+                    if right_name == "rsi":
+                        period = st.number_input("right.period", 2, 200, 14)
+                        right_params["period"] = int(period)
+                    if right_name == "macd":
+                        fast = st.number_input("right.fast", 2, 200, 12)
+                        slow = st.number_input("right.slow", 2, 200, 26)
+                        signal = st.number_input("right.signal", 2, 200, 9)
+                        right_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
+                        right_field = st.selectbox("right.field", ["macd", "signal", "hist"], index=2)
+                    if right_name in ["sma", "ema", "rsi", "bbands", "macd"]:
+                        right_source = st.selectbox("right.source", SOURCES, index=3)
+
+            if st.button("조건 추가 (비교식)", use_container_width=True):
+                left = build_operand(left_kind, left_name, left_params, left_field, left_source, const_value=None)
+                right = build_operand(right_kind, right_name, right_params, right_field, right_source, const_value)
+                st.session_state.rule_rows.append({"type": "compare", "op": op, "left": left, "right": right})
+                st.success("비교식 조건이 추가되었습니다.")
+
+        else:  # 교차식
+            colC, colD = st.columns(2)
+            with colC:
+                cross_op = st.selectbox("교차 종류", ["crossover", "crossunder"], index=0)
+                l_kind = st.selectbox("Left", ["indicator", "source"], index=0, key="cross_l_kind")
+                l_name = st.selectbox("Left 선택", INDICATORS if l_kind == "indicator" else SOURCES, key="cross_l_name")
+                l_params = {};
+                l_field = None;
+                l_source = None
+                if l_kind == "indicator":
+                    if l_name in ["sma", "bbands"]:
+                        win = st.number_input("left.window", 5, 200, 12, key="cross_l_win")
+                        l_params["window"] = int(win)
+                    if l_name == "ema":
+                        span = st.number_input("left.span", 2, 200, 12, key="cross_l_span")
+                        l_params["span"] = int(span)
+                    if l_name == "rsi":
+                        period = st.number_input("left.period", 2, 200, 14, key="cross_l_period")
+                        l_params["period"] = int(period)
+                    if l_name == "macd":
+                        fast = st.number_input("left.fast", 2, 200, 12, key="cross_l_fast")
+                        slow = st.number_input("left.slow", 2, 200, 26, key="cross_l_slow")
+                        signal = st.number_input("left.signal", 2, 200, 9, key="cross_l_signal")
+                        l_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
+                        l_field = st.selectbox("left.field", ["macd", "signal", "hist"], index=2, key="cross_l_field")
+                    if l_name in ["sma", "ema", "rsi", "bbands", "macd"]:
+                        l_source = st.selectbox("left.source", SOURCES, index=3, key="cross_l_source")
+
+            with colD:
+                r_kind = st.selectbox("Right", ["indicator", "source"], index=0, key="cross_r_kind")
+                r_name = st.selectbox("Right 선택", INDICATORS if r_kind == "indicator" else SOURCES, key="cross_r_name")
+                r_params = {};
+                r_field = None;
+                r_source = None
+                if r_kind == "indicator":
+                    if r_name in ["sma", "bbands"]:
+                        win = st.number_input("right.window", 5, 200, 26, key="cross_r_win")
+                        r_params["window"] = int(win)
+                    if r_name == "ema":
+                        span = st.number_input("right.span", 2, 200, 26, key="cross_r_span")
+                        r_params["span"] = int(span)
+                    if r_name == "rsi":
+                        period = st.number_input("right.period", 2, 200, 14, key="cross_r_period")
+                        r_params["period"] = int(period)
+                    if r_name == "macd":
+                        fast = st.number_input("right.fast", 2, 200, 12, key="cross_r_fast")
+                        slow = st.number_input("right.slow", 2, 200, 26, key="cross_r_slow")
+                        signal = st.number_input("right.signal", 2, 200, 9, key="cross_r_signal")
+                        r_params.update({"fast": int(fast), "slow": int(slow), "signal": int(signal)})
+                        r_field = st.selectbox("right.field", ["macd", "signal", "hist"], index=2, key="cross_r_field")
+                    if r_name in ["sma", "ema", "rsi", "bbands", "macd"]:
+                        r_source = st.selectbox("right.source", SOURCES, index=3, key="cross_r_source")
+
+            if st.button("조건 추가 (교차식)", use_container_width=True):
+                left = build_operand(l_kind, l_name, l_params, l_field, l_source, const_value=None)
+                right = build_operand(r_kind, r_name, r_params, r_field, r_source, const_value=None)
+                st.session_state.rule_rows.append({"type": "cross", "op": cross_op, "left": left, "right": right})
+                st.success("교차식 조건이 추가되었습니다.")
+
+    # 현재 조건 리스트 표시/관리
+    st.markdown("#### 현재 조건")
+    if not st.session_state.rule_rows:
+        st.info("추가된 조건이 없습니다.")
+    else:
+        for i, row in enumerate(st.session_state.rule_rows):
+            st.write(f"{i + 1}) {row}")
+
+        colX, colY, colZ = st.columns([1, 1, 2])
+        with colX:
+            if st.button("마지막 조건 삭제"):
+                st.session_state.rule_rows.pop()
+        with colY:
+            if st.button("모두 삭제"):
+                st.session_state.rule_rows = []
+
+    # 결합 방식 (AND/OR)
+    st.session_state.rule_logic = st.radio("조건 결합 방식", ["and", "or"], index=0, horizontal=True)
+
+    # 룰 JSON 생성 + 미리보기 + entry_sig 개수 표시
+    if st.button("룰 JSON 생성/적용", type="secondary"):
+        if not st.session_state.rule_rows:
+            st.warning("조건이 없습니다. 최소 1개 이상 추가하세요.")
+        else:
+            # 내부 표현을 DSL로 컴파일
+            clauses = []
+            for r in st.session_state.rule_rows:
+                if r["type"] == "compare":
+                    clauses.append({
+                        "op": r["op"],
+                        "left": r["left"],
+                        "right": r["right"]
+                    })
+                else:  # cross
+                    clauses.append({
+                        "op": r["op"],
+                        "left": r["left"],
+                        "right": r["right"]
+                    })
+            if len(clauses) == 1:
+                compiled = clauses[0]
+            else:
+                compiled = {"op": st.session_state.rule_logic, "args": clauses}
+
+            # 룰 JSON 텍스트에 주입 (기존 Entry textarea 변수명에 맞게)
+            st.session_state["Entry JSON"] = json.dumps(compiled, indent=2)  # 키 이름은 아래 textarea의 label/key에 맞춰주면 자동 반영됨
+
+            # 바로 평가해서 True 개수 피드백
+            try:
+                entry_sig_preview = evaluate_rule(compiled, price_df)
+                st.success(f"룰 적용 완료! True 시그널 개수: {int(entry_sig_preview.sum())}")
+            except Exception as e:
+                st.error(f"룰 평가 에러: {e}")
 
     # 기본 Entry/Exit 룰 템플릿
     default_entry = {
@@ -288,6 +298,122 @@ with tab_bt:
     exit_text = st.text_area("Exit JSON (비우면 엔진 기본 로직 사용: entry 재등장 시 청산)", key="Exit JSON", value=json.dumps(default_exit, indent=2), height=180)
 
     run_bt = st.button("백테스트 실행", type="primary")
+
+    # ======================
+    # 🧪 샘플 전략 비교 (프리셋)
+    # ======================
+    st.markdown("---")
+    st.subheader("🎛️ 샘플 전략 시나리오 비교 (프리셋 3종)")
+
+    # 프리셋 정의 (Entry/Exit 룰 JSON)
+    PRESETS = {
+        "EMA Cross (12/26)": {
+            "entry": {
+                "op": "crossover",
+                "left": {"type": "indicator", "name": "ema", "params": {"span": 12}, "source": "close"},
+                "right": {"type": "indicator", "name": "ema", "params": {"span": 26}, "source": "close"}
+            },
+            "exit": {
+                "op": "crossunder",
+                "left": {"type": "indicator", "name": "ema", "params": {"span": 12}, "source": "close"},
+                "right": {"type": "indicator", "name": "ema", "params": {"span": 26}, "source": "close"}
+            }
+        },
+        "BB Rebound (close↗BB lower / exit EMA20)": {
+            "entry": {
+                "op": "crossover",
+                "left": {"type": "indicator", "name": "close"},
+                "right": {"type": "indicator", "name": "bbands", "params": {"window": 20, "k": 2}, "field": "bb_lower"}
+            },
+            "exit": {
+                "op": "crossunder",
+                "left": {"type": "indicator", "name": "close"},
+                "right": {"type": "indicator", "name": "ema", "params": {"span": 20}, "source": "close"}
+            }
+        },
+        "RSI Breakout (50)": {
+            "entry": {
+                "op": "crossover",
+                "left": {"type": "indicator", "name": "rsi", "params": {"period": 14}, "source": "close"},
+                "right": {"type": "const", "value": 50}
+            },
+            "exit": {
+                "op": "crossunder",
+                "left": {"type": "indicator", "name": "rsi", "params": {"period": 14}, "source": "close"},
+                "right": {"type": "const", "value": 50}
+            }
+        }
+    }
+
+    colL, colR = st.columns([1, 1])
+    with colL:
+        pick = st.multiselect("비교할 전략 선택", list(PRESETS.keys()),
+                              default=list(PRESETS.keys()))
+    with colR:
+        st.caption("선택한 전략들을 동일 파라미터로 실행합니다.")
+
+    if st.button("프리셋 실행/비교", type="primary"):
+        try:
+            from backtest.evals import summarize
+
+            PER_YEAR = {"1h": 24 * 365, "4h": 6 * 365, "1d": 365}
+
+            results = []
+            curves = []
+
+            for name in pick:
+                rules = PRESETS[name]
+                entry_sig = evaluate_rule(rules["entry"], price_df)
+                exit_sig = evaluate_rule(rules["exit"], price_df)
+
+                bt_df, trades, _log = backtest_long_only(
+                    price_df,
+                    entry_sig,
+                    exit_sig=exit_sig,
+                    fee=fee, slippage=slippage, cooldown=int(cooldown)
+                )
+
+                metrics = summarize(bt_df["equity"], trades, periods_per_year=PER_YEAR.get(interval, 365))
+                results.append({
+                    "strategy": name,
+                    "total_return(%)": round(metrics["total_return"] * 100, 2),
+                    "CAGR(%)": round(metrics["cagr"] * 100, 2),
+                    "MDD(%)": round(metrics["mdd"] * 100, 2),
+                    "Sharpe": round(metrics["sharpe"], 2),
+                    "trades": metrics["trades"],
+                    "win_rate(%)": round(metrics["win_rate"] * 100, 1),
+                })
+                curves.append((name, bt_df[["time", "equity"]]))
+
+            # 성과 비교표
+            comp_df = pd.DataFrame(results).sort_values("total_return(%)", ascending=False).reset_index(drop=True)
+            st.write("**성과 비교**")
+            st.dataframe(comp_df, height=220)
+
+            # Equity 비교 차트 (단일 플롯)
+            fig_cmp = plt.figure()
+            for name, curve in curves:
+                plt.plot(curve["time"], curve["equity"], label=name)
+            # B&H도 같이 보기
+            bh = price_df[["time", "close"]].copy()
+            bh["equity"] = bh["close"] / bh["close"].iloc[0]
+            plt.plot(bh["time"], bh["equity"], label="Buy & Hold")
+
+            plt.title("Equity Comparison (Presets)")
+            plt.xlabel("time");
+            plt.ylabel("equity")
+            plt.legend()
+            st.pyplot(fig_cmp, clear_figure=True)
+
+            # 비교표 CSV 다운로드
+            csv = comp_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button("성과 비교표 CSV 다운로드", csv, file_name="preset_comparison.csv", mime="text/csv")
+
+        except Exception as e:
+            import traceback
+
+            st.error("프리셋 실행 중 오류가 발생했습니다.")
+            st.code(traceback.format_exc())
 
     if run_bt:
         try:
@@ -412,7 +538,6 @@ with tab_corr:
     st.pyplot(fig_s, clear_figure=True)
 
     # 4) 라그 상관 히트맵(pearson, 단일 플롯)
-    import numpy as np
     fig_h = plt.figure()
     vals = np.ma.masked_invalid(corr_df["pearson"].to_numpy()).reshape(-1, 1)
     plt.imshow(vals, aspect="auto", origin="lower")
