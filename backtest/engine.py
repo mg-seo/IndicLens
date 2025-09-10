@@ -53,4 +53,4 @@ def backtest_long_only(price_df: pd.DataFrame,
         curve.append(equity)
 
     df["equity"] = curve
-    return df
+    return df, trades
