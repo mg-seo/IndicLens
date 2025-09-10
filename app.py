@@ -333,12 +333,27 @@ with tab_bt:
                 f"전략 대비 초과수익: {excess*100:,.2f}%"
             )
 
-            # Equity 비교 차트 (한 플롯에 두 곡선)
+            # --- Equity 비교 차트 + 트레이드 마커 ---
             fig = plt.figure()
             plt.plot(bt_df["time"], bt_df["equity"], label="Strategy")
             plt.plot(bh["time"], bh["equity"], label="Buy & Hold")
-            plt.title("Equity Curve vs Buy & Hold")
-            plt.xlabel("time")
+
+            # trade_log 마커 표시
+            if trade_log:
+                log_df = pd.DataFrame(trade_log).sort_values("entry_time").reset_index(drop=True)
+
+                # 진입/청산 시점에 해당 equity 값 가져오기 (time 기준 merge)
+                ent = pd.merge(log_df[["entry_time"]], bt_df[["time", "equity"]], left_on="entry_time", right_on="time",
+                               how="left")
+                ex = pd.merge(log_df[["exit_time"]], bt_df[["time", "equity"]], left_on="exit_time", right_on="time",
+                              how="left")
+
+                # 진입은 ▲, 청산은 ▼ (색은 기본값 사용)
+                plt.scatter(ent["entry_time"], ent["equity"], marker="^")
+                plt.scatter(ex["exit_time"], ex["equity"], marker="v")
+
+            plt.title("Equity Curve vs Buy & Hold (▲ entry, ▼ exit)")
+            plt.xlabel("time");
             plt.ylabel("equity")
             plt.legend()
             st.pyplot(fig, clear_figure=True)
@@ -372,6 +387,7 @@ with tab_bt:
 with tab_corr:
     st.subheader("Funding Rate ↔ 가격 로그수익률 라그 상관")
 
+    # 1) 데이터 준비
     fr = fetch_funding_rate(symbol, limit=200)
     corr_df = feature_return_lag_corr(
         price_df, fr, feature_col="fundingRate",
@@ -380,10 +396,57 @@ with tab_corr:
     )
 
     st.dataframe(corr_df, height=320)
-    st.line_chart(
-        corr_df.set_index("lag")[["pearson", "spearman"]],
-        height=280
-    )
+
+    # 2) Pearson 선형 차트
+    fig_p = plt.figure()
+    plt.plot(corr_df["lag"], corr_df["pearson"])
+    plt.title("Lag vs Pearson Corr (양수=지표 선행)")
+    plt.xlabel("lag"); plt.ylabel("pearson")
+    st.pyplot(fig_p, clear_figure=True)
+
+    # 3) Spearman 선형 차트
+    fig_s = plt.figure()
+    plt.plot(corr_df["lag"], corr_df["spearman"])
+    plt.title("Lag vs Spearman Corr (양수=지표 선행)")
+    plt.xlabel("lag"); plt.ylabel("spearman")
+    st.pyplot(fig_s, clear_figure=True)
+
+    # 4) 라그 상관 히트맵(pearson, 단일 플롯)
+    import numpy as np
+    fig_h = plt.figure()
+    vals = np.ma.masked_invalid(corr_df["pearson"].to_numpy()).reshape(-1, 1)
+    plt.imshow(vals, aspect="auto", origin="lower")
+    # y축 tick을 적당히 샘플링해서 라그 값 표시
+    step = max(1, len(corr_df)//8)
+    plt.yticks(ticks=range(0, len(corr_df), step),
+               labels=corr_df["lag"].iloc[::step])
+    plt.xticks([0], ["pearson"])
+    plt.title("Lag Correlation Heatmap (pearson)")
+    plt.colorbar()
+    st.pyplot(fig_h, clear_figure=True)
+
+    # 5) 최대 절대 상관 라그 표시
+    best_p = corr_df.iloc[corr_df["pearson"].abs().idxmax()]
+    best_s = corr_df.iloc[corr_df["spearman"].abs().idxmax()]
+    st.info(f"최대 |Pearson|: lag={int(best_p['lag'])}, value={best_p['pearson']:.4f}, n={int(best_p['n'])}")
+    st.info(f"최대 |Spearman|: lag={int(best_s['lag'])}, value={best_s['spearman']:.4f}, n={int(best_s['n'])}")
+
+    # 가격/시그널 차트
+    fig_price = plt.figure()
+    plt.plot(price_df["time"], price_df["close"], label="Close")
+
+    sig_times = pd.Series(entry_sig[entry_sig].index)
+    last10 = sig_times.tail(10)
+    if not last10.empty:
+        # 시그널 시점의 종가값 맞추기
+        tmp = price_df.set_index("time").reindex(last10)
+        plt.scatter(tmp.index, tmp["close"], marker="o")
+
+    plt.title("Price with Recent Entry Signals (last 10)")
+    plt.xlabel("time");
+    plt.ylabel("price")
+    plt.legend()
+    st.pyplot(fig_price, clear_figure=True)
 
     with st.expander("라그 해석 도움말", expanded=False):
         st.markdown(
