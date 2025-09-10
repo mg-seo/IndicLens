@@ -25,6 +25,7 @@ def backtest_long_only(price_df: pd.DataFrame,
     entry_price = 0.0
     cool = 0
     trades = []
+    trade_log = []
     equity = 1.0
     curve = []
 
@@ -39,6 +40,7 @@ def backtest_long_only(price_df: pd.DataFrame,
         if pos == 0:
             if entry_sig.iloc[i] and cool == 0:
                 pos = 1
+                entry_time = row["time"]
                 entry_price = price * (1 + fee + slippage)
         else:
             # 청산 조건: exit_sig가 있으면 그때 청산, 아니면 entry_sig 반대
@@ -46,6 +48,13 @@ def backtest_long_only(price_df: pd.DataFrame,
                 ret = (price * (1 - fee - slippage)) / entry_price
                 equity *= ret
                 trades.append(ret - 1.0)
+                trade_log.append({  # <-- 추가
+                    "entry_time": entry_time,
+                    "exit_time": row["time"],
+                    "entry_price": entry_price,
+                    "exit_price": price * (1 - fee - slippage),
+                    "ret": ret - 1.0
+                })
                 pos = 0
                 entry_price = 0.0
                 cool = cooldown
@@ -53,4 +62,4 @@ def backtest_long_only(price_df: pd.DataFrame,
         curve.append(equity)
 
     df["equity"] = curve
-    return df, trades
+    return df, trades, trade_log

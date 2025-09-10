@@ -1,5 +1,7 @@
 import streamlit as st
 import pandas as pd
+import json
+from matplotlib import pyplot as plt
 
 from backtest.data import (
     fetch_klines,
@@ -44,49 +46,113 @@ tab_bt, tab_corr = st.tabs(["🧪 백테스트", "🔗 상관분석"])
 # 🧪 백테스트 탭
 # ======================
 with tab_bt:
-    st.subheader("전략: EMA12 ↗ EMA26 진입, EMA12 ↘ EMA26 청산")
+    st.subheader("🧪 커스텀 룰 → 백테스트")
 
-    entry_rule = {
-        "op": "crossover",
-        "left":  {"type":"indicator","name":"ema","params":{"span":12},"source":"close"},
-        "right": {"type":"indicator","name":"ema","params":{"span":26},"source":"close"}
+    # 기본 Entry/Exit 룰 템플릿
+    default_entry = {
+        "op": "and",
+        "args": [
+            { "op": "crossover",
+              "left":  { "type":"indicator","name":"ema","params":{"span":12},"source":"close" },
+              "right": { "type":"indicator","name":"ema","params":{"span":26},"source":"close" }
+            },
+            { "op": ">",
+              "left":  { "type":"indicator","name":"macd","params":{"fast":12,"slow":26,"signal":9}, "field":"hist" },
+              "right": { "type":"const","value": 0 }
+            }
+        ]
     }
-    exit_rule = {
+    default_exit = {
         "op": "crossunder",
         "left":  {"type":"indicator","name":"ema","params":{"span":12},"source":"close"},
         "right": {"type":"indicator","name":"ema","params":{"span":26},"source":"close"}
     }
 
-    entry_sig = evaluate_rule(entry_rule, price_df)
-    exit_sig  = evaluate_rule(exit_rule, price_df)
+    # 룰 JSON 입력 UI
+    st.write("**룰 JSON (Entry)**")
+    entry_text = st.text_area("Entry JSON", value=json.dumps(default_entry, indent=2), height=220)
 
-    bt_df, trades = backtest_long_only(
-        price_df,
-        entry_sig,
-        exit_sig,
-        fee=fee,
-        slippage=slippage,
-        cooldown=int(cooldown),
-    )
+    st.write("**룰 JSON (Exit, 선택 입력)**")
+    exit_text = st.text_area("Exit JSON (비우면 엔진 기본 로직 사용: entry 재등장 시 청산)", value=json.dumps(default_exit, indent=2), height=180)
 
-    # 타임프레임별 연율화 상수
-    PER_YEAR = {"1h": 24 * 365, "4h": 6 * 365, "1d": 365}
-    metrics = summarize(bt_df["equity"], trades, periods_per_year=PER_YEAR[interval])
+    run_bt = st.button("백테스트 실행", type="primary")
 
-    c1, c2, c3, c4, c5, c6 = st.columns(6)
-    c1.metric("총수익률", f"{metrics['total_return']*100:,.2f}%")
-    c2.metric("CAGR", f"{metrics['cagr']*100:,.2f}%")
-    c3.metric("MDD", f"{metrics['mdd']*100:,.2f}%")
-    c4.metric("Sharpe", f"{metrics['sharpe']:.2f}")
-    c5.metric("거래수", f"{metrics['trades']}")
-    c6.metric("승률", f"{metrics['win_rate']*100:,.1f}%")
+    if run_bt:
+        try:
+            # JSON 파싱
+            entry_rule_json = json.loads(entry_text)
+            exit_rule_json = json.loads(exit_text) if exit_text.strip() else None
 
-    st.line_chart(
-        bt_df.set_index("time")[["close", "equity"]],
-        height=320
-    )
+            # 시그널 계산
+            entry_sig = evaluate_rule(entry_rule_json, price_df)
+            exit_sig  = evaluate_rule(exit_rule_json, price_df) if exit_rule_json else None
 
-    st.caption("※ 룩어헤드 방지: 신호 발생 시 다음 캔들 시가 체결. 수수료·슬리피지 및 쿨다운 반영.")
+            # 백테스트 실행 (룩어헤드 방지: 엔진 내부에서 신호 shift 처리)
+            bt_df, trades, trade_log = backtest_long_only(
+                price_df,
+                entry_sig,
+                exit_sig=exit_sig,
+                fee=fee,
+                slippage=slippage,
+                cooldown=int(cooldown),
+            )
+
+            # 성과 요약
+            PER_YEAR = {"1h": 24 * 365, "4h": 6 * 365, "1d": 365}
+            metrics = summarize(bt_df["equity"], trades, periods_per_year=PER_YEAR.get(interval, 365))
+
+            # 벤치마크: Buy & Hold
+            bh = price_df[["time", "close"]].copy()
+            bh["equity"] = bh["close"] / bh["close"].iloc[0]
+            bh_metrics = summarize(bh["equity"], [], periods_per_year=PER_YEAR.get(interval, 365))
+            excess = metrics["total_return"] - bh_metrics["total_return"]
+
+            # KPI
+            c1, c2, c3, c4, c5, c6 = st.columns(6)
+            c1.metric("총수익률", f"{metrics['total_return']*100:,.2f}%")
+            c2.metric("CAGR", f"{metrics['cagr']*100:,.2f}%")
+            c3.metric("MDD", f"{metrics['mdd']*100:,.2f}%")
+            c4.metric("Sharpe", f"{metrics['sharpe']:.2f}")
+            c5.metric("거래수", f"{metrics['trades']}")
+            c6.metric("승률", f"{metrics['win_rate']*100:,.1f}%")
+
+            st.caption(
+                f"📌 벤치마크(B&H) 총수익률: {bh_metrics['total_return']*100:,.2f}% · "
+                f"전략 대비 초과수익: {excess*100:,.2f}%"
+            )
+
+            # Equity 비교 차트 (한 플롯에 두 곡선)
+            fig = plt.figure()
+            plt.plot(bt_df["time"], bt_df["equity"], label="Strategy")
+            plt.plot(bh["time"], bh["equity"], label="Buy & Hold")
+            plt.title("Equity Curve vs Buy & Hold")
+            plt.xlabel("time")
+            plt.ylabel("equity")
+            plt.legend()
+            st.pyplot(fig, clear_figure=True)
+
+            # 시그널 시점 미리보기
+            st.write("**시그널(최근 10개 True)**")
+            sig_times = pd.Series(entry_sig[entry_sig].index).tail(10)
+            st.dataframe(pd.DataFrame({"signal_time": sig_times}))
+
+            # 트레이드 로그
+            if trade_log:
+                st.write("**트레이드 로그 (최근 20건)**")
+                log_df = pd.DataFrame(trade_log).sort_values("entry_time").reset_index(drop=True)
+                st.dataframe(log_df.tail(20))
+
+                # CSV 다운로드
+                csv = log_df.to_csv(index=False).encode("utf-8-sig")
+                st.download_button("트레이드 로그 CSV 다운로드", csv, file_name="trades.csv", mime="text/csv")
+            else:
+                st.info("트레이드가 없습니다.")
+
+            st.caption("※ 룩어헤드 방지: 신호 발생 시 다음 캔들 시가 체결. 수수료·슬리피지 및 쿨다운 반영.")
+
+        except Exception as e:
+            st.error(f"룰 해석/백테스트 중 오류: {e}")
+
 
 # ======================
 # 🔗 상관분석 탭
