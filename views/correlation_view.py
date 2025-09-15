@@ -793,7 +793,7 @@ def _quick_signal_tester_ui(price_df: pd.DataFrame, feats_raw: dict[str, pd.Data
         cond = (z >= thr_z) if side == "상위가 조건" else (z <= -thr_z)
 
     # “진입 순간만” 보고 싶으면 아래 주석 해제
-    # cond = cond & (~cond.shift(1).fillna(False))
+    cond = cond & (~cond.shift(1).fillna(False))
 
     # 3) k-스텝 미래수익
     fr = np.log(price_df["close"].shift(-int(k)) / price_df["close"])

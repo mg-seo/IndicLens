@@ -5,23 +5,28 @@ import streamlit as st
 from ui.sidebar import sidebar_inputs
 import views.backtest_view as bt_v
 import views.correlation_view as corr_v
+import views.data_preview as dp
+
 
 st.set_page_config(page_title="IndicLens", layout="wide")
 
 st.title("📈 IndicLens — 초보 트레이더용 백테스트 & 상관분석")
-st.caption("Binance 데이터 기반 • 교육용 데모")
+st.caption("Binance 데이터 기반")
 
 # 사이드바 입력
 inputs = sidebar_inputs()
 
 # 탭 구성
-_tab1, _tab2 = st.tabs(["🧪 백테스트", "🔗 상관분석"])
+_tab1, _tab2, _tab3= st.tabs(["🧪 백테스트", "🔗 상관분석", "데이터"])
 
 with _tab1:
     bt_v.view(inputs)
 
 with _tab2:
     corr_v.view(inputs)
+
+with _tab3:
+    dp.view(inputs.symbol, inputs.interval)
 
 with st.expander("ℹ️ 사용 팁"):
     st.markdown(
